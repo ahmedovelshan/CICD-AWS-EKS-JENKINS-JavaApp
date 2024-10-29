@@ -1,17 +1,24 @@
 pipeline {
     agent any
     tools {
-        jdk "jdk"
-        maven "maven"
+        jdk 'jdk'
+        maven 'maven'
+    }
+    parameters {
+        string(name: 'AWS_ACCESS_KEY_ID', description: 'Enter AWS Access Key ID')
+        string(name: 'AWS_SECRET_ACCESS_KEY', description: 'Enter AWS Secret Access Key')
     }
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
+        AWS_ACCESS_KEY_ID = "${params.AWS_ACCESS_KEY_ID}"
+        AWS_SECRET_ACCESS_KEY = "${params.AWS_SECRET_ACCESS_KEY}"
+        AWS_DEFAULT_REGION = "eu-central-1"
     }
     
     stages {
         stage('Git Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/ougabriel/full-stack-blogging-app.git'
+                git branch: 'main', url: 'https://github.com/ahmedovelshan/full-stack-blogging-app.git'
             }
         }
         stage('Compile') {
@@ -27,8 +34,12 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sonarqubeServer') {
-                    sh '''$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Blogging-app -Dsonar.projectKey=Blogging-app \
-                          -Dsonar.java.binaries=target'''
+                    sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=Blogging-app \
+                        -Dsonar.projectKey=Blogging-app \
+                        -Dsonar.java.binaries=target
+                    '''
                 }
             }
         }
@@ -39,88 +50,41 @@ pipeline {
         }
         stage('Publish Artifacts') {
             steps {
-                withMaven(globalMavenSettingsConfig: 'maven-settings', jdk: 'jdk', maven: 'maven', mavenSettingsConfig: '', traceability: true) {
-                        sh "mvn deploy"
+                withMaven(globalMavenSettingsConfig: 'maven-settings') {
+                    sh "mvn deploy"
                 }
             }
         }
         stage('Docker Build & Tag') {
             steps {
-                script{
-                withDockerRegistry(credentialsId: 'dockerhub-cred', url: 'https://index.docker.io/v1/') {
-                sh "docker build -t ugogabriel/gab-blogging-app ."
-                }
+                script {
+                    withDockerRegistry(credentialsId: 'dockerhub-cred', url: 'https://index.docker.io/v1/') {
+                        sh "docker build -t ahmedovelshan/gab-blogging-app2 ."
+                    }
                 }
             }
         }
         stage('Trivy Image Scan') {
             steps {
-                sh "trivy image --format table -o image.html ugogabriel/gab-blogging-app:latest"
+                sh "trivy image --format table -o image.html ahmedovelshan/gab-blogging-app2:latest"
             }
         }
         stage('Docker Push Image') {
             steps {
-                script{
-                withDockerRegistry(credentialsId: 'dockerhub-cred', url: 'https://index.docker.io/v1/') {
-                    sh "docker push ugogabriel/gab-blogging-app"
-                }
+                script {
+                    withDockerRegistry(credentialsId: 'dockerhub-cred', url: 'https://index.docker.io/v1/') {
+                        sh "docker push ahmedovelshan/gab-blogging-app2"
+                    }
                 }
             }
         }
-        stage('K8s Deploy') {
+        stage("Deploy to EKS") {
             steps {
-               withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: ' devopsshack-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://AD1D9143EC6B3C8A72B36759FA28854D.gr7.eu-west-2.eks.amazonaws.com']]) {
+                script {
+                    sh "aws eks update-kubeconfig --region eu-central-1 --name Blue-green-eks-cluster"
                     sh "kubectl apply -f deployment-service.yml"
-                    sleep 20
                 }
             }
-        }
-        stage('Verify Deployment') {
-            steps {
-               withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: ' devopsshack-cluster', contextName: '', credentialsId: 'k8s-token', namespace: 'webapps', serverUrl: 'https://AD1D9143EC6B3C8A72B36759FA28854D.gr7.eu-west-2.eks.amazonaws.com']]) {
-                    sh "kubectl get pods"
-                    sh "kubectl get service"
-                }
-            }
-        }
-        
-    }  // Closing stages
-}  // Closing pipeline
-post {
-    always {
-        script {
-            // Get job name, build number, and pipeline status
-            def jobName = env.JOB_NAME
-            def buildNumber = env.BUILD_NUMBER
-            def pipelineStatus = currentBuild.result ?: 'UNKNOWN'
-            pipelineStatus = pipelineStatus.toUpperCase()
-            
-            // Set the banner color based on the status
-            def bannerColor = pipelineStatus == 'SUCCESS' ? 'green' : 'red'
-
-            // HTML body for the email
-            def body = """
-            <body>
-                <div style="border: 2px solid ${bannerColor}; padding: 10px;">
-                    <h3 style="color: ${bannerColor};">
-                        Pipeline Status: ${pipelineStatus}
-                    </h3>
-                    <p>Job: ${jobName}</p>
-                    <p>Build Number: ${buildNumber}</p>
-                    <p>Status: ${pipelineStatus}</p>
-                </div>
-            </body>
-            """
-
-            // Send email notification
-            emailext(
-                subject: "${jobName} - Build ${buildNumber} - ${pipelineStatus}",
-                body: body,
-                to: 'ougabriel@gmail.com',
-                from: 'jenkins@example.com',
-                replyTo: 'jenkins@example.com',
-                mimeType: 'text/html'
-            )
         }
     }
 }
